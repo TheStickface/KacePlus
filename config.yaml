@@ -1,0 +1,16 @@
+kace:
+  webhook_secret: "${KACE_WEBHOOK_SECRET}"
+
+teams:
+  webhook_url: "${TEAMS_WEBHOOK_URL}"
+  channel_name: "IT Helpdesk"
+
+server:
+  port: "${PORT}"
+
+events:
+  notify_on:
+    - ticket.created
+    - ticket.assigned
+    - ticket.status_changed
+    - ticket.sla_breach
