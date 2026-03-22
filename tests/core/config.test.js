@@ -1,19 +1,23 @@
-const path = require('path');
-
 // Helper: run config loader with controlled env vars
+let savedEnv;
 function loadConfig(env = {}) {
   // Reset module cache so config re-runs each test
   jest.resetModules();
-  process.env = { ...env };
+  // Merge provided env vars with existing ones
+  process.env = { ...process.env, ...env };
   // Point to the real config.yaml
   return require('../../src/core/config');
 }
 
 describe('config', () => {
+  beforeEach(() => {
+    savedEnv = { ...process.env };
+  });
+
   afterEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
-    jest.dontMock('js-yaml');
+    process.env = savedEnv;
   });
 
   it('loads required fields from env vars', () => {
@@ -44,12 +48,10 @@ describe('config', () => {
         // channel_name intentionally omitted
       }),
     }));
-    process.env = {
-      KACE_WEBHOOK_SECRET: 'secret123',
-      TEAMS_WEBHOOK_URL: 'https://example.com/webhook',
-    };
+    process.env = { ...process.env, KACE_WEBHOOK_SECRET: 'secret123', TEAMS_WEBHOOK_URL: 'https://example.com/webhook' };
     const cfg = require('../../src/core/config');
     expect(cfg.teams.channel_name).toBe('KacePlus');
+    jest.dontMock('js-yaml');
   });
 
   it('defaults server.port to 3000 when PORT env var is not set', () => {

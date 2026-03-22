@@ -1,3 +1,11 @@
+/**
+ * Loads config.yaml, interpolates ${ENV_VAR} placeholders from process.env,
+ * validates required fields, and exports the final config object.
+ *
+ * Required env vars: KACE_WEBHOOK_SECRET, TEAMS_WEBHOOK_URL
+ * Optional env vars: PORT (default: 3000)
+ */
+
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
