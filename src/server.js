@@ -21,6 +21,10 @@ app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
     .update(req.body)
     .digest('hex');
 
+  // KACE sends the signature as a bare hex digest (no 'sha256=' prefix).
+  // Buffer.from(signature, 'hex') silently produces an empty buffer for non-hex
+  // input; timingSafeEqual will then throw due to length mismatch, which the
+  // try/catch handles by setting valid = false.
   let valid = false;
   try {
     valid = crypto.timingSafeEqual(

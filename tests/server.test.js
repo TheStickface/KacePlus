@@ -1,12 +1,21 @@
 const crypto = require('crypto');
 const request = require('supertest');
 
+// Mock the notifier so server tests don't depend on Teams delivery behavior
+jest.mock('../src/integrations/teams/notifier');
+
 process.env.KACE_WEBHOOK_SECRET = 'testsecret';
 process.env.TEAMS_WEBHOOK_URL = 'https://teams.example.com/webhook';
 
 function makeApp() {
-  jest.resetModules();
-  return require('../src/server');
+  let app;
+  let notifyMock;
+  jest.isolateModules(() => {
+    jest.mock('../src/integrations/teams/notifier', () => jest.fn().mockResolvedValue(undefined));
+    app = require('../src/server');
+    notifyMock = require('../src/integrations/teams/notifier');
+  });
+  return { app, notifyMock };
 }
 
 function sign(body, secret) {
@@ -18,13 +27,13 @@ const PAYLOAD = JSON.stringify({ event: 'ticket.created', timestamp: '2026-01-01
 
 describe('POST /webhook', () => {
   it('returns 401 when signature header is missing', async () => {
-    const app = makeApp();
+    const { app } = makeApp();
     const res = await request(app).post('/webhook').send(PAYLOAD).set('Content-Type', 'application/json');
     expect(res.status).toBe(401);
   });
 
   it('returns 401 when signature is wrong', async () => {
-    const app = makeApp();
+    const { app } = makeApp();
     const res = await request(app)
       .post('/webhook')
       .send(PAYLOAD)
@@ -34,9 +43,7 @@ describe('POST /webhook', () => {
   });
 
   it('returns 200 for a valid signed payload', async () => {
-    const nock = require('nock');
-    nock('https://teams.example.com').post('/webhook').reply(200);
-    const app = makeApp();
+    const { app } = makeApp();
     const sig = sign(PAYLOAD, SECRET);
     const res = await request(app)
       .post('/webhook')
@@ -44,13 +51,10 @@ describe('POST /webhook', () => {
       .set('Content-Type', 'application/json')
       .set('X-KACE-Signature', sig);
     expect(res.status).toBe(200);
-    nock.cleanAll();
   });
 
-  it('returns 200 even when Teams delivery fails', async () => {
-    const nock = require('nock');
-    nock('https://teams.example.com').post('/webhook').reply(500).persist();
-    const app = makeApp();
+  it('returns 200 even when notifier is called (fire-and-forget)', async () => {
+    const { app, notifyMock } = makeApp();
     const sig = sign(PAYLOAD, SECRET);
     const res = await request(app)
       .post('/webhook')
@@ -58,12 +62,24 @@ describe('POST /webhook', () => {
       .set('Content-Type', 'application/json')
       .set('X-KACE-Signature', sig);
     expect(res.status).toBe(200);
-    nock.cleanAll();
+    expect(notifyMock).toHaveBeenCalled();
   });
 
   it('returns 200 and drops events not in notify_on', async () => {
-    const app = makeApp();
+    const { app } = makeApp();
     const body = JSON.stringify({ event: 'ticket.deleted', data: {} });
+    const sig = sign(body, SECRET);
+    const res = await request(app)
+      .post('/webhook')
+      .send(body)
+      .set('Content-Type', 'application/json')
+      .set('X-KACE-Signature', sig);
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 200 when body is not valid JSON', async () => {
+    const { app } = makeApp();
+    const body = 'not-json';
     const sig = sign(body, SECRET);
     const res = await request(app)
       .post('/webhook')
@@ -76,7 +92,7 @@ describe('POST /webhook', () => {
 
 describe('GET /health', () => {
   it('returns 200 with status ok', async () => {
-    const app = makeApp();
+    const { app } = makeApp();
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
