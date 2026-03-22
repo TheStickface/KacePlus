@@ -52,6 +52,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
   const { event, data } = payload;
 
   if (!config.events.notify_on.includes(event)) {
+    console.log(`[server] Event type '${event}' not in notify_on — dropping`);
     return res.status(200).json({ ok: true });
   }
 

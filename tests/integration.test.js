@@ -21,7 +21,7 @@ describe('Integration: KACE webhook → Teams card', () => {
     const app = require('../src/server');
 
     let capturedBody;
-    nock('https://teams.example.com')
+    const scope = nock('https://teams.example.com')
       .post('/webhook', (body) => {
         capturedBody = body;
         return true;
@@ -41,8 +41,11 @@ describe('Integration: KACE webhook → Teams card', () => {
       .set('Content-Type', 'application/json')
       .set('X-KACE-Signature', sig);
 
-    // Allow notifier's async delivery to complete
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait for the nock scope to be consumed (notifier delivered the card)
+    const deadline = Date.now() + 2000;
+    while (!scope.isDone() && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
 
     expect(res.status).toBe(200);
     expect(capturedBody).toBeDefined();
