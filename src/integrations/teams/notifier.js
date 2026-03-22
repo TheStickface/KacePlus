@@ -33,7 +33,7 @@ async function notify(event, webhookUrl, channelName) {
   try {
     card = template(event.data ?? {}, channelName);
   } catch (err) {
-    console.error(`[notifier] Template rendering failed for ${event.type}:`, err.message);
+    console.error(`[notifier] Template rendering failed for ${event.type}:`, err);
     return;
   }
 
@@ -41,7 +41,7 @@ async function notify(event, webhookUrl, channelName) {
   while (attempt < MAX_RETRIES) {
     attempt++;
     try {
-      await axios.post(webhookUrl, card);
+      await axios.post(webhookUrl, card, { timeout: 10000 });
       console.log(`[notifier] Delivered ${event.type} card (attempt ${attempt})`);
       return;
     } catch (err) {
