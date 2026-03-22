@@ -10,6 +10,12 @@ function loadConfig(env = {}) {
 }
 
 describe('config', () => {
+  afterEach(() => {
+    jest.resetModules();
+    jest.clearAllMocks();
+    jest.dontMock('js-yaml');
+  });
+
   it('loads required fields from env vars', () => {
     const cfg = loadConfig({
       KACE_WEBHOOK_SECRET: 'secret123',
@@ -19,13 +25,31 @@ describe('config', () => {
     expect(cfg.teams.webhook_url).toBe('https://teams.example.com/webhook');
   });
 
-  it('applies default channel_name when not set in yaml', () => {
+  it('loads channel_name literal value from yaml', () => {
     const cfg = loadConfig({
       KACE_WEBHOOK_SECRET: 'secret123',
       TEAMS_WEBHOOK_URL: 'https://teams.example.com/webhook',
     });
     // channel_name is a literal in yaml, not an env var — verify it loaded
     expect(cfg.teams.channel_name).toBe('IT Helpdesk');
+  });
+
+  it('defaults channel_name to KacePlus when absent from config', () => {
+    jest.resetModules();
+    // Mock js-yaml to return config without channel_name
+    jest.doMock('js-yaml', () => ({
+      load: () => ({
+        kace: { webhook_secret: 'secret123' },
+        teams: { webhook_url: 'https://example.com/webhook' },
+        // channel_name intentionally omitted
+      }),
+    }));
+    process.env = {
+      KACE_WEBHOOK_SECRET: 'secret123',
+      TEAMS_WEBHOOK_URL: 'https://example.com/webhook',
+    };
+    const cfg = require('../../src/core/config');
+    expect(cfg.teams.channel_name).toBe('KacePlus');
   });
 
   it('defaults server.port to 3000 when PORT env var is not set', () => {
