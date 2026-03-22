@@ -1,6 +1,8 @@
 # KacePlus — Integration Hub Design Spec
 **Date:** 2026-03-22
 **Scope:** Feature 3 — KACE → Microsoft Teams Notification Integration
+**Node.js minimum:** 18+
+**Express minimum:** 4.16+
 
 ---
 
@@ -15,7 +17,7 @@ A single Node.js service that listens for webhook events from a Dell KACE helpde
 ## Scope
 
 **In scope:**
-- Receiving and validating KACE webhook payloads
+- Receiving and validating KACE webhook payloads (HMAC-SHA256 — Option A confirmed)
 - Formatting events as Teams Adaptive Cards
 - Delivering notifications to a Teams channel via Incoming Webhook
 - Configurable event filtering (admins choose which events trigger notifications)
@@ -26,6 +28,8 @@ A single Node.js service that listens for webhook events from a Dell KACE helpde
 - Email-to-ticket creation (handled by existing tooling)
 - Active Directory user enrichment
 - Slack integration
+- TLS termination — assumed to be handled by the host environment or a reverse proxy; the Express server listens on plain HTTP
+- Process management / deployment (e.g., PM2, Docker) — addressed in a separate deployment runbook
 
 ---
 
@@ -43,6 +47,7 @@ KacePlus/
 │   │       ├── notifier.js    # Posts Adaptive Cards to Teams webhook URL
 │   │       └── templates.js   # Adaptive Card templates per event type
 │   └── server.js              # Express app — KACE webhook receiver + health check
+├── .env.example               # Documents all required environment variables
 ├── config.yaml                # Runtime configuration
 └── package.json
 ```
@@ -59,40 +64,35 @@ KACE appliance (dk1srv)
     │  HTTP POST /webhook
     ▼
 server.js
-    │  1. Validate X-KACE-Signature (HMAC-SHA256)
-    │  2. Check event type against notify_on filter → drop if not listed
+    │  1. Validate X-KACE-Signature (HMAC-SHA256) → 401 if invalid
+    │  2. Check event type against notify_on filter → 200 + drop if not listed
     │  3. Pass event to notifier
     ▼
 teams/notifier.js
     │  Selects Adaptive Card template
     │  Populates with event data
     │  POST to Teams Incoming Webhook URL
+    │  (retries on failure; absorbs all errors)
     ▼
 Microsoft Teams channel
+    │
+    └──► server.js returns 200 to KACE regardless of Teams delivery outcome
+         (prevents KACE from re-sending on downstream failure)
 ```
 
 ---
 
 ## Webhook Signature Validation
 
-**Before implementation, confirm whether `dk1srv` supports outbound webhook signatures** via the KACE admin console (Service Desk → Configuration → Webhooks). Appliance-class products sometimes do not support payload signing. The approach depends on the outcome:
+**Chosen approach: Option A — HMAC-SHA256** (confirmed for `dk1srv`).
 
-**Option A — KACE supports HMAC-SHA256 signatures (preferred)**
-The signature is sent in the `X-KACE-Signature` header as a hex digest.
+`dk1srv` signs outbound webhook payloads using HMAC-SHA256. The signature is sent in the `X-KACE-Signature` header as a hex digest.
 
 Validation in `server.js`:
-1. Configure the `/webhook` route with `express.raw({ type: 'application/json' })` to receive the raw body buffer. Do **not** use `express.json()` on this route — it consumes the body stream before the HMAC can be computed. Requires Express 4.16+.
+1. Configure the `/webhook` route with `express.raw({ type: 'application/json' })` to receive the raw body buffer. Do **not** use `express.json()` on this route — it consumes the body stream before the HMAC can be computed.
 2. Compute `HMAC-SHA256(rawBodyBuffer, kace.webhook_secret)`
 3. Compare using **`crypto.timingSafeEqual`** to prevent timing attacks
 4. Return `401` if the header is absent or the digest does not match
-
-**Option B — KACE does not support payload signing**
-Use an IP allowlist: accept requests only from `dk1srv`'s IP. Add `kace.allowed_ip` to `config.yaml`. Return `403` for all other source IPs. `kace.webhook_secret` is not required in this mode.
-
-**Option C — Explicit unauthenticated POSTs**
-Acceptable only if KacePlus and `dk1srv` are on the same isolated VLAN with no external access to the webhook port. Document this decision explicitly in config and deployment notes.
-
-**Update this spec with the chosen option before implementation begins.**
 
 ---
 
@@ -153,7 +153,9 @@ Per-event `data` schemas:
 }
 ```
 
-> These schemas are representative. Verify against your KACE instance (`dk1srv`) and adjust field names as needed.
+> These schemas are representative. Verify field names against `dk1srv` and adjust as needed.
+
+**Intentionally excluded events:** `ticket.closed` and `ticket.comment_added` are not in scope for this version. If KACE emits them, they are silently dropped as unknown event types.
 
 ---
 
@@ -170,7 +172,7 @@ teams:
   channel_name: "IT Helpdesk"               # Optional, default: "KacePlus"
 
 server:
-  port: 3000                                # Optional, default: 3000 (overridden by PORT env var)
+  port: "${PORT}"                            # Optional, default: 3000
 
 events:
   notify_on:                                # Optional, defaults to all four if omitted
@@ -186,29 +188,30 @@ events:
 |---|---|---|
 | `kace.webhook_secret` | Yes | — |
 | `teams.webhook_url` | Yes | — |
-| `teams.channel_name` | No | `"KacePlus"` (cosmetic — used in Adaptive Card footer text only; does not affect routing) |
-| `server.port` | No | `3000` (env var `PORT` takes precedence) |
+| `teams.channel_name` | No | `"KacePlus"` (cosmetic — rendered in Adaptive Card footer `TextBlock` only; does not affect routing) |
+| `server.port` | No | `3000` |
 | `events.notify_on` | No | `["ticket.created", "ticket.assigned", "ticket.status_changed", "ticket.sla_breach"]` |
 
-**Environment variable interpolation:** `config.js` reads `config.yaml` via `js-yaml`, then replaces any `${VAR_NAME}` strings with the corresponding `process.env` values. A missing required env var (after interpolation resulting in an empty string) causes `config.js` to throw at startup.
+**Environment variable interpolation:** `config.js` reads `config.yaml` via `js-yaml`, then replaces any `${VAR_NAME}` strings with the corresponding `process.env` values. For `server.port`, if the interpolated value is empty or missing, `config.js` falls back to `3000`. A missing required env var (resulting in an empty string after interpolation) causes `config.js` to throw at startup.
 
-A `.env` file (loaded via `dotenv` at process start) may be used for local development. It must not be committed to version control — `.gitignore` must include `.env`. A `.env.example` file with placeholder values for all required variables should be committed to document the expected environment.
+**dotenv load order:** `require('dotenv').config()` must be called at the very top of `server.js`, before importing `config.js`, to ensure env vars are available when `config.js` runs. A `.env` file must not be committed — `.gitignore` must include `.env`. A `.env.example` file documents all required variables and is committed to version control.
 
 ---
 
 ## Components
 
 ### `server.js`
-- Express HTTP server, listens on `config.server.port` (default `3000`, overridden by `PORT` env var)
-- `POST /webhook` — validates HMAC-SHA256 signature, filters by `events.notify_on`, passes matching events to `notifier.js`
+- Calls `require('dotenv').config()` before any other imports
+- Express HTTP server (Express 4.16+), listens on `config.server.port` (default `3000`)
+- `POST /webhook` — configured with `express.raw({ type: 'application/json' })`; validates HMAC-SHA256 signature; filters by `events.notify_on`; passes matching events to `notifier.js`; always returns `200` for valid (signed) payloads regardless of downstream outcome
 - `GET /health` — returns `200 OK` with `{ status: "ok" }` for uptime monitoring
-- Returns `401` for invalid signatures
-- Returns `200` for valid requests regardless of Teams delivery outcome (prevents KACE from endlessly retrying for a downstream failure)
+- Returns `401` for invalid or missing signatures
 - Logging via `console.log` / `console.error` (structured logging not required at this scope)
+- Note: signature validation and event filtering are co-located in `server.js` as a deliberate trade-off for simplicity at this scope; if `server.js` grows, extracting a `validateSignature` middleware is the natural first refactor
 
 ### `core/config.js`
 - Loads `config.yaml` at startup using `js-yaml`
-- Interpolates `${ENV_VAR}` placeholders with `process.env` values
+- Interpolates `${ENV_VAR}` placeholders with `process.env` values; falls back to `3000` for `server.port` if unset
 - Validates that `kace.webhook_secret` and `teams.webhook_url` are non-empty after interpolation
 - Throws with a descriptive message on missing required config (fail fast before server starts)
 - Applies defaults for all optional fields
@@ -216,6 +219,8 @@ A `.env` file (loaded via `dotenv` at process start) may be used for local devel
 ### `integrations/teams/templates.js`
 - Exports one Adaptive Card template function per supported event type
 - Each is a pure function: `(eventPayload) => AdaptiveCard JSON`
+- Templates are **defensive**: if expected fields are absent, render a graceful fallback (e.g., `"(unknown)"`) rather than throwing
+- Each template includes a footer `TextBlock` displaying `config.teams.channel_name`
 - Supported events: `ticket.created`, `ticket.assigned`, `ticket.status_changed`, `ticket.sla_breach`
 
 ### `integrations/teams/notifier.js`
@@ -224,7 +229,7 @@ A `.env` file (loaded via `dotenv` at process start) may be used for local devel
 - POSTs the Adaptive Card to the configured Teams Incoming Webhook URL via `axios`
 - Retries up to 3 times with exponential backoff (delays: 1s, 2s, 4s) on **retryable errors only**: network errors, 5xx responses, and `429 Too Many Requests` (respecting `Retry-After` header if present)
 - Does **not** retry on 4xx responses (except 429) — these indicate a malformed card and will never succeed
-- Logs success or final failure to console after all retries are exhausted
+- Catches all errors (including template rendering errors) and logs without re-throwing — caller (`server.js`) always returns `200`
 
 ---
 
@@ -233,9 +238,10 @@ A `.env` file (loaded via `dotenv` at process start) may be used for local devel
 | Scenario | Behavior |
 |---|---|
 | Invalid/missing webhook signature | `401` response, log and drop |
-| Event type not in `notify_on` filter (known but disabled by admin) | `200` response, silently drop — filtered in `server.js` before calling notifier |
-| Completely unknown event type (not one of the four supported types) | `200` response, silently ignore — same filter in `server.js` handles both cases |
-| Teams delivery failure after 3 retries | Log error, return `200` to KACE (prevents KACE retry storm) |
+| Event type not in `notify_on` filter (known but disabled) | `200` response, silently drop — filtered in `server.js` |
+| Completely unknown event type | `200` response, silently ignore — same filter handles both cases |
+| Payload missing expected fields (valid signature, bad body) | Template renders graceful fallback; `notifier.js` posts the fallback card; `server.js` returns `200` |
+| Teams delivery failure after 3 retries | Log error, `server.js` returns `200` to KACE (prevents retry storm) |
 | Missing required config at startup | Throw with descriptive message, process exits with code 1 |
 
 ---
@@ -243,12 +249,12 @@ A `.env` file (loaded via `dotenv` at process start) may be used for local devel
 ## Testing
 
 - **Unit tests (`jest`):**
-  - `templates.js` — correct Adaptive Card output for each of the four event types
-  - `notifier.js` — retry logic with HTTP responses stubbed via `nock`
-  - `server.js` — HMAC signature validation (valid, invalid, missing header), event filter logic
-  - `config.js` — env var interpolation, required field validation
+  - `templates.js` — correct Adaptive Card output for each of the four event types; graceful fallback for missing fields
+  - `notifier.js` — retry logic (retryable vs non-retryable errors) with HTTP responses stubbed via `nock`; `Retry-After` header respected on 429 responses
+  - `server.js` — HMAC signature validation (valid, invalid, missing header); event filter logic; always returns `200` for valid payloads
+  - `config.js` — env var interpolation; `server.port` fallback to `3000`; required field validation
 
-- **Integration test:** Start the Express server on a random port via `server.listen(0)` using `supertest`. Set up a `nock` intercept for the Teams Incoming Webhook URL before the request is made (strict mode — `nock` must not be in `allowUnmocked` mode to prevent accidental calls to the real Teams endpoint). POST a sample KACE payload with a valid signature; assert the `nock` stub received the expected Adaptive Card JSON.
+- **Integration test:** Start the Express server on a random port via `server.listen(0)` using `supertest`. Set up a `nock` intercept for the Teams Incoming Webhook URL before the request is made (`nock.disableNetConnect()` to prevent accidental calls to real endpoints). POST a sample KACE payload with a valid HMAC-SHA256 signature; assert the `nock` stub received the expected Adaptive Card JSON.
 
 ---
 
@@ -256,7 +262,7 @@ A `.env` file (loaded via `dotenv` at process start) may be used for local devel
 
 | Package | Purpose |
 |---|---|
-| `express` | HTTP server / webhook receiver |
+| `express` | HTTP server / webhook receiver (4.16+) |
 | `axios` | HTTP client for Teams webhook delivery |
 | `js-yaml` | Parse `config.yaml` |
 | `dotenv` | Load `.env` for local development |
@@ -270,11 +276,14 @@ A `.env` file (loaded via `dotenv` at process start) may be used for local devel
 
 - No persistent storage — this service is stateless
 - No UI — configuration is file-based
-- No authentication layer beyond webhook secret validation
+- No authentication layer beyond HMAC-SHA256 webhook secret validation
 - No structured/JSON logging — `console.log` is sufficient at this scope
+- No TLS termination — handled by host environment or reverse proxy
+- No deployment/process management — addressed in a separate deployment runbook
 
 ---
 
 ## Future Work
 
 - `kaceClient.js` — KACE REST API wrapper for features that require reading/writing ticket data (e.g., two-way Teams commands, ticket enrichment)
+- `ticket.closed` and `ticket.comment_added` event support
