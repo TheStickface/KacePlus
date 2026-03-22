@@ -7,6 +7,7 @@ function footer(channel) {
     size: 'Small',
     color: 'Default',
     isSubtle: true,
+    wrap: true,
   };
 }
 

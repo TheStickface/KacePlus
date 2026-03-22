@@ -32,11 +32,17 @@ describe('templates.ticket.assigned', () => {
       CHANNEL
     );
     expect(JSON.stringify(card)).toContain('john.smith');
+    expect(JSON.stringify(card)).toContain('jane.doe');
   });
 
   it('renders graceful fallback for missing fields', () => {
     const card = templates['ticket.assigned']({}, CHANNEL);
     expect(JSON.stringify(card)).toContain('(unknown)');
+  });
+
+  it('includes channel name in footer', () => {
+    const card = templates['ticket.assigned']({ id: 2 }, CHANNEL);
+    expect(JSON.stringify(card)).toContain('IT Helpdesk');
   });
 });
 
@@ -55,6 +61,11 @@ describe('templates.ticket.status_changed', () => {
     const card = templates['ticket.status_changed']({}, CHANNEL);
     expect(JSON.stringify(card)).toContain('(unknown)');
   });
+
+  it('includes channel name in footer', () => {
+    const card = templates['ticket.status_changed']({ id: 3 }, CHANNEL);
+    expect(JSON.stringify(card)).toContain('IT Helpdesk');
+  });
 });
 
 describe('templates.ticket.sla_breach', () => {
@@ -71,5 +82,10 @@ describe('templates.ticket.sla_breach', () => {
   it('renders graceful fallback for missing fields', () => {
     const card = templates['ticket.sla_breach']({}, CHANNEL);
     expect(JSON.stringify(card)).toContain('(unknown)');
+  });
+
+  it('includes channel name in footer', () => {
+    const card = templates['ticket.sla_breach']({ id: 4 }, CHANNEL);
+    expect(JSON.stringify(card)).toContain('IT Helpdesk');
   });
 });
